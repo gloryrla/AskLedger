@@ -1,91 +1,122 @@
-package askledger;
+package askledger.service;
+
+import askledger.model.Record;
+import askledger.model.SearchQuery;
+import askledger.storage.DataStorage;
 
 import java.time.YearMonth;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.List;
 
-/**
- * Keeps the list of all records.
- */
+/** 전체 기록 목록을 관리하는 클래스 */
 public class RecordManager {
-    private final DataStorage storage;
+    private DataStorage storage;
     private List<Record> records = new ArrayList<>();
 
-    /**
-     * @param storage used to save after every change
-     */
-    public RecordManager(DataStorage storage) { this.storage = storage; }
+    public RecordManager(DataStorage storage) {
+        this.storage = storage;
+    }
 
-    /**
-     * Replaces the record list with the loaded records.
-     * @param records loaded records (this list is kept, not copied)
-     */
-    public void setRecords(List<Record> records) { this.records = records; }
+    public void setRecords(List<Record> records) {
+        this.records = records;
+    }
 
-    /**
-     * Gives the record a new id, adds it to the list, and saves.
-     * @param record new record
-     * @return true if it is saved
-     */
+    /** 새 id를 붙여서 추가하고 저장 (id는 지금 가장 큰 id + 1) */
     public boolean addRecord(Record record) {
-        record.setId(records.stream().mapToInt(Record::getId).max().orElse(0) + 1);
+        int maxId = 0;
+        for (Record r : records) {
+            if (r.getId() > maxId) {
+                maxId = r.getId();
+            }
+        }
+        record.setId(maxId + 1);
         records.add(record);
         return storage.saveAll();
     }
 
-    /**
-     * Replaces the record with the given id and saves.
-     * @param id id of the record to change
-     * @param record new values
-     * @return false if the id does not exist
-     */
+    /** 기록 수정 */
     public boolean updateRecord(int id, Record record) {
-        for (int k = 0; k < records.size(); k++) {
-            if (records.get(k).getId() == id) {
+        for (int i = 0; i < records.size(); i++) {
+            if (records.get(i).getId() == id) {
                 record.setId(id);
-                records.set(k, record);
+                records.set(i, record);
                 return storage.saveAll();
             }
         }
         return false;
     }
 
-    /**
-     * Removes the record with the given id and saves.
-     * @param id id of the record
-     * @return false if the id does not exist
-     */
+    /** 기록 삭제 */
     public boolean deleteRecord(int id) {
-        return records.removeIf(r -> r.getId() == id) && storage.saveAll();
+        for (int i = 0; i < records.size(); i++) {
+            if (records.get(i).getId() == id) {
+                records.remove(i);
+                return storage.saveAll();
+            }
+        }
+        return false;
     }
 
-    /**
-     * Returns the records that match every condition in the query, sorted by date.
-     * A null condition is ignored. Keywords match if any keyword is in the memo or category.
-     * @param q search conditions
-     * @return matching records
-     */
-    public List<Record> findRecords(SearchQuery q) {
-        return records.stream()
-                .filter(r -> q.startDate() == null || !r.getDate().isBefore(q.startDate()))
-                .filter(r -> q.endDate() == null || !r.getDate().isAfter(q.endDate()))
-                .filter(r -> q.type() == null || r.getType() == q.type())
-                .filter(r -> q.categories() == null || q.categories().isEmpty() || q.categories().contains(r.getCategory()))
-                .filter(r -> q.minAmount() == null || r.getAmount() >= q.minAmount())
-                .filter(r -> q.maxAmount() == null || r.getAmount() <= q.maxAmount())
-                .filter(r -> q.keywords() == null || q.keywords().isEmpty() || q.keywords().stream().anyMatch(k ->
-                        (r.getMemo() + " " + r.getCategory()).toLowerCase().contains(k.toLowerCase())))
-                .sorted(Comparator.comparing(Record::getDate))
-                .toList();
+    /** 조건에 모두 맞는 기록을 날짜순으로 돌려준다 */
+    public List<Record> findRecords(SearchQuery query) {
+        List<Record> result = new ArrayList<>();
+        for (Record r : records) {
+            if (matches(r, query)) {
+                result.add(r);
+            }
+        }
+        Collections.sort(result);
+        return result;
     }
 
-    /**
-     * Returns the records whose date is in the given month, sorted by date.
-     * @param month the month
-     * @return records of the month
-     */
+    /** 해당 달의 기록을 날짜순으로 돌려준다 */
     public List<Record> getRecordsByMonth(YearMonth month) {
-        return findRecords(new SearchQuery(month.atDay(1), month.atEndOfMonth(), null, null, null, null, null));
+        List<Record> result = new ArrayList<>();
+        for (Record r : records) {
+            if (r.getDate().getYear() == month.getYear() && r.getDate().getMonthValue() == month.getMonthValue()) {
+                result.add(r);
+            }
+        }
+        Collections.sort(result);
+        return result;
+    }
+
+    // 조건이 null이면 그 조건은 검사 안 함
+    private boolean matches(Record r, SearchQuery q) {
+        if (q.getStartDate() != null && r.getDate().isBefore(q.getStartDate())) {
+            return false;
+        }
+        if (q.getEndDate() != null && r.getDate().isAfter(q.getEndDate())) {
+            return false;
+        }
+        if (q.getType() != null && r.getType() != q.getType()) {
+            return false;
+        }
+        if (q.getCategories() != null && !q.getCategories().isEmpty() && !q.getCategories().contains(r.getCategory())) {
+            return false;
+        }
+        if (q.getMinAmount() != null && r.getAmount() < q.getMinAmount()) {
+            return false;
+        }
+        if (q.getMaxAmount() != null && r.getAmount() > q.getMaxAmount()) {
+            return false;
+        }
+        if (q.getKeywords() != null && !q.getKeywords().isEmpty()) {
+            String text = (r.getMemo() + " " + r.getCategory()).toLowerCase();
+            boolean found = false;
+            // 키워드 중 하나라도 메모나 카테고리에 있으면 통과
+            for (String keyword : q.getKeywords()) {
+                if (text.contains(keyword.toLowerCase())) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return false;
+            }
+        }
+        return true;
     }
 }
+

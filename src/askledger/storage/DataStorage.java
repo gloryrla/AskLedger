@@ -1,92 +1,132 @@
-package askledger;
+package askledger.storage;
+
+import askledger.model.Record;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Reads and writes the local JSON data file.
- */
+/** 데이터 파일(JSON) 읽기/저장 */
 public class DataStorage {
-    /** Categories used when there is no data file. */
-    public static final List<String> DEFAULT_CATEGORIES = List.of(
+    /** 데이터 파일이 없을 때 쓰는 기본 카테고리 */
+    public static final List<String> DEFAULT_CATEGORIES = Arrays.asList(
             "Food", "Cafe", "Transport", "Shopping", "Culture", "Education", "Housing",
             "Health", "Subscription", "Salary", "Allowance", "Scholarship", "Other");
 
-    private final Path file;
+    private String fileName;
     private LedgerData data;
 
-    /**
-     * @param file path of the data file
-     */
-    public DataStorage(Path file) { this.file = file; }
+    public DataStorage(String fileName) {
+        this.fileName = fileName;
+    }
 
-    /**
-     * Reads the data file. If there is no file, returns empty data with the default categories.
-     * @return loaded data
-     * @throws IOException if the file exists but cannot be read
-     */
-    @SuppressWarnings("unchecked")
+    /** 데이터 파일을 읽는다. 파일이 없으면 기본 카테고리만 있는 빈 데이터를 돌려준다 */
     public LedgerData loadAll() throws IOException {
         List<Record> records = new ArrayList<>();
-        Map<String, Long> budgets = new LinkedHashMap<>();
+        Map<String, Long> budgets = new HashMap<>();
         List<String> categories = new ArrayList<>(DEFAULT_CATEGORIES);
-        if (Files.exists(file)) {
-            Map<String, Object> root = (Map<String, Object>) Json.parse(Files.readString(file, StandardCharsets.UTF_8));
-            for (Object o : (List<Object>) root.getOrDefault("records", List.of())) {
-                Map<String, Object> r = (Map<String, Object>) o;
-                records.add(new Record(((Long) r.get("id")).intValue(), LocalDate.parse((String) r.get("date")),
-                        Record.Type.valueOf((String) r.get("type")), (Long) r.get("amount"),
-                        (String) r.get("category"), (String) r.get("memo")));
-            }
-            ((Map<String, Object>) root.getOrDefault("budgets", Map.of()))
-                    .forEach((k, v) -> budgets.put(k, (Long) v));
-            List<Object> cats = (List<Object>) root.get("categories");
-            if (cats != null && !cats.isEmpty()) {
-                categories.clear();
-                cats.forEach(c -> categories.add((String) c));
+
+        Path path = Paths.get(fileName);
+        if (Files.exists(path)) {
+            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            String section = "";
+            for (String line : lines) {
+                line = line.trim();
+                if (line.startsWith("\"categories\"")) {
+                    List<String> list = Json.getList(line, "categories");
+                    if (!list.isEmpty()) {
+                        categories.clear();
+                        categories.addAll(list);
+                    }
+                } else if (line.startsWith("\"budgets\"")) {
+                    section = "budgets";
+                } else if (line.startsWith("\"records\"")) {
+                    section = "records";
+                } else if (line.startsWith("{\"")) {
+                    if (section.equals("budgets")) {
+                        budgets.put(Json.getString(line, "category"), Json.getLong(line, "amount"));
+                    } else if (section.equals("records")) {
+                        records.add(readRecord(line));
+                    }
+                }
             }
         }
         data = new LedgerData(records, budgets, categories);
         return data;
     }
 
-    /**
-     * Copies the current file as a backup ({@code .bak}), then writes all records and budgets.
-     * The new content is written to a temporary file first, so a crash never leaves a half-written file.
-     * @return true if the file is written
-     */
+    // 기록 한 줄을 Record 객체로 바꾼다
+    private Record readRecord(String line) throws IOException {
+        Long id = Json.getLong(line, "id");
+        Long amount = Json.getLong(line, "amount");
+        String date = Json.getString(line, "date");
+        String type = Json.getString(line, "type");
+        if (id == null || amount == null || date == null || type == null) {
+            throw new IOException("Wrong record line: " + line);
+        }
+        return new Record(id.intValue(), LocalDate.parse(date), Record.Type.valueOf(type), amount,
+                Json.getString(line, "category"), Json.getString(line, "memo"));
+    }
+
+    /** 전체 데이터를 파일에 저장 */
     public boolean saveAll() {
-        if (data == null) return false;
-        try {
-            List<Object> recs = new ArrayList<>();
-            for (Record r : data.records()) {
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("id", r.getId());
-                m.put("date", r.getDate().toString());
-                m.put("type", r.getType().name());
-                m.put("amount", r.getAmount());
-                m.put("category", r.getCategory());
-                m.put("memo", r.getMemo());
-                recs.add(m);
+        if (data == null) {
+            return false;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n");
+
+        sb.append("\"categories\": [");
+        List<String> categories = data.getCategories();
+        for (int i = 0; i < categories.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
             }
-            Map<String, Object> root = new LinkedHashMap<>();
-            root.put("records", recs);
-            root.put("budgets", data.budgets());
-            root.put("categories", data.categories());
-            Path abs = file.toAbsolutePath();
-            if (abs.getParent() != null) Files.createDirectories(abs.getParent());
-            if (Files.exists(abs)) Files.copy(abs, abs.resolveSibling(abs.getFileName() + ".bak"), StandardCopyOption.REPLACE_EXISTING);
-            Path tmp = abs.resolveSibling(abs.getFileName() + ".tmp");
-            Files.writeString(tmp, Json.write(root), StandardCharsets.UTF_8);
-            Files.move(tmp, abs, StandardCopyOption.REPLACE_EXISTING);
+            sb.append(Json.quote(categories.get(i)));
+        }
+        sb.append("],\n");
+
+        sb.append("\"budgets\": [\n");
+        int n = 0;
+        for (String category : data.getBudgets().keySet()) {
+            sb.append("{\"category\": ").append(Json.quote(category));
+            sb.append(", \"amount\": ").append(data.getBudgets().get(category)).append("}");
+            n++;
+            if (n < data.getBudgets().size()) {
+                sb.append(",");
+            }
+            sb.append("\n");
+        }
+        sb.append("],\n");
+
+        sb.append("\"records\": [\n");
+        List<Record> records = data.getRecords();
+        for (int i = 0; i < records.size(); i++) {
+            Record r = records.get(i);
+            sb.append("{\"id\": ").append(r.getId());
+            sb.append(", \"date\": ").append(Json.quote(r.getDate().toString()));
+            sb.append(", \"type\": ").append(Json.quote(r.getType().name()));
+            sb.append(", \"amount\": ").append(r.getAmount());
+            sb.append(", \"category\": ").append(Json.quote(r.getCategory()));
+            sb.append(", \"memo\": ").append(Json.quote(r.getMemo())).append("}");
+            if (i < records.size() - 1) {
+                sb.append(",");
+            }
+            sb.append("\n");
+        }
+        sb.append("]\n}\n");
+
+        try {
+            Path path = Paths.get(fileName);
+            Files.writeString(path, sb.toString(), StandardCharsets.UTF_8);
             return true;
         } catch (IOException e) {
             return false;

@@ -1,42 +1,40 @@
 package askledger;
 
-import javax.swing.*;
-import java.nio.file.Path;
+import askledger.service.BudgetManager;
+import askledger.service.LLMClient;
+import askledger.service.RecordManager;
+import askledger.service.RuleParser;
+import askledger.service.SearchService;
+import askledger.service.StatisticsService;
+import askledger.storage.DataStorage;
+import askledger.storage.LedgerData;
+import askledger.ui.MainFrame;
 
-/**
- * Starts AskLedger.
- * <p>The data file is {@code askledger_data.json} in the current folder, or the path given by the
- * system property {@code askledger.data}.</p>
- */
+import javax.swing.JOptionPane;
+
+/** 프로그램 시작 클래스 (main 메서드가 있음) */
 public class AskLedgerApp {
-    private AskLedgerApp() {}
-
-    /**
-     * Loads the data file, creates the objects and shows the main window.
-     * @param args not used
-     */
     public static void main(String[] args) {
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception ignored) {
-        }
-        DataStorage storage = new DataStorage(Path.of(System.getProperty("askledger.data", "askledger_data.json")));
+        DataStorage storage = new DataStorage("askledger_data.json");
         LedgerData data;
         try {
             data = storage.loadAll();
         } catch (Exception e) {
-            JOptionPane.showMessageDialog(null, "The data file could not be read:\n" + e.getMessage(),
-                    "AskLedger", JOptionPane.ERROR_MESSAGE);
-            return; // do not start with empty data, or the next save would overwrite the file
+            JOptionPane.showMessageDialog(null, "The data file could not be read.");
+            return;
         }
+
         RecordManager recordManager = new RecordManager(storage);
-        recordManager.setRecords(data.records());
+        recordManager.setRecords(data.getRecords());
         BudgetManager budgetManager = new BudgetManager(storage, recordManager);
-        budgetManager.setBudgets(data.budgets());
-        SearchService searchService = new SearchService(new LLMClient(data.categories()),
-                new RuleParser(data.categories()), recordManager, data.categories());
+        budgetManager.setBudgets(data.getBudgets());
+
+        LLMClient llmClient = new LLMClient(data.getCategories());
+        RuleParser ruleParser = new RuleParser(data.getCategories());
+        SearchService searchService = new SearchService(llmClient, ruleParser, recordManager, data.getCategories());
         StatisticsService statisticsService = new StatisticsService(recordManager);
-        SwingUtilities.invokeLater(() ->
-                new MainFrame(recordManager, budgetManager, searchService, statisticsService, data.categories()).showWindow());
+
+        MainFrame frame = new MainFrame(recordManager, budgetManager, searchService, statisticsService, data.getCategories());
+        frame.showWindow();
     }
 }

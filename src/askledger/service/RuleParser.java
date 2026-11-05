@@ -1,135 +1,190 @@
-package askledger;
+package askledger.service;
 
-import java.time.DayOfWeek;
+import askledger.model.Record;
+import askledger.model.SearchQuery;
+
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * Turns a question into search conditions without the LLM.
- * Understands date words, category names, amount expressions and income/expense words
- * in English and Korean. The remaining words become keywords.
+ * LLM 없이 질문을 검색 조건으로 바꾸는 클래스.
+ * 날짜 단어, 카테고리, 금액(이상/이하), 수입/지출 단어를 찾고 나머지 단어는 키워드로 쓴다.
  */
 public class RuleParser {
-    private static final Pattern RECENT = Pattern.compile("(?:recent|last|past)\\s+(\\d+)\\s+months?|최근\\s*(\\d+)\\s*개월");
-    private static final String NUM = "(\\d[\\d,]*)\\s*(만)?\\s*(?:won|원)?";
-    private static final Pattern MIN = Pattern.compile("(?:over|more than|above|at least)\\s*" + NUM + "|" + NUM + "\\s*(?:or more|이상|넘게|넘는)");
-    private static final Pattern MAX = Pattern.compile("(?:under|less than|below|at most)\\s*" + NUM + "|" + NUM + "\\s*(?:or less|이하|미만)");
-    private static final Map<String, String> ALIASES = Map.ofEntries(
-            Map.entry("식비", "Food"), Map.entry("meal", "Food"), Map.entry("밥", "Food"),
-            Map.entry("카페", "Cafe"), Map.entry("coffee", "Cafe"), Map.entry("커피", "Cafe"),
-            Map.entry("교통", "Transport"), Map.entry("bus", "Transport"), Map.entry("taxi", "Transport"),
-            Map.entry("쇼핑", "Shopping"), Map.entry("문화", "Culture"), Map.entry("movie", "Culture"),
-            Map.entry("교육", "Education"), Map.entry("rent", "Housing"), Map.entry("월세", "Housing"),
-            Map.entry("병원", "Health"), Map.entry("구독", "Subscription"), Map.entry("월급", "Salary"),
-            Map.entry("급여", "Salary"), Map.entry("용돈", "Allowance"), Map.entry("장학금", "Scholarship"));
-    private static final Set<String> EXPENSE_WORDS = Set.of("spend", "spent", "expense", "expenses", "paid", "pay", "지출", "썼어", "썼지", "쓴", "썼나");
-    private static final Set<String> INCOME_WORDS = Set.of("income", "earn", "earned", "received", "수입", "번", "받은");
-    private static final Set<String> STOP = Set.of("how", "much", "many", "did", "do", "i", "on", "in", "the", "a", "an",
-            "for", "my", "what", "was", "were", "show", "me", "find", "all", "records", "record", "of", "at", "to",
-            "and", "is", "are", "total", "money", "with", "during", "won", "get", "got", "list",
-            "얼마", "얼마나", "내역", "보여줘", "알려줘", "거", "것", "돈", "총", "나", "내가", "그", "했던", "했어", "원");
-    private static final String[] JOSA = {"에서", "으로", "에", "로", "을", "를", "이", "가", "은", "는", "도", "의", "랑"};
+    // 검색에 의미 없는 단어들 (키워드에서 뺀다)
+    private static final List<String> STOP_WORDS = Arrays.asList(
+            "how", "much", "did", "i", "on", "in", "the", "what", "show", "me", "won",
+            "today", "this", "last", "week", "month", "months", "recent",
+            "얼마", "얼마나", "내역", "보여줘", "원", "오늘", "이번", "지난", "주", "달",
+            "이번주", "이번달", "지난달", "최근");
+    // 지출/수입을 뜻하는 단어들
+    private static final List<String> EXPENSE_WORDS = Arrays.asList("spend", "spent", "expense", "expenses", "paid", "지출", "썼어", "쓴");
+    private static final List<String> INCOME_WORDS = Arrays.asList("income", "earned", "received", "수입", "받은");
 
-    private final List<String> categories;
+    private List<String> categories;
+    private Map<String, String> aliases = new HashMap<>();   // 카테고리를 다르게 부르는 말 (예: 커피 -> Cafe)
 
-    /**
-     * @param categories known category names
-     */
-    public RuleParser(List<String> categories) { this.categories = categories; }
+    public RuleParser(List<String> categories) {
+        this.categories = categories;
+        aliases.put("식비", "Food");
+        aliases.put("카페", "Cafe");
+        aliases.put("커피", "Cafe");
+        aliases.put("교통", "Transport");
+        aliases.put("택시", "Transport");
+        aliases.put("쇼핑", "Shopping");
+        aliases.put("월급", "Salary");
+        aliases.put("용돈", "Allowance");
+    }
 
-    /**
-     * Parses a question using today's date.
-     * @param question the user's question
-     * @return search conditions (never null)
-     */
-    public SearchQuery parse(String question) { return parse(question, LocalDate.now()); }
+    /** 오늘 날짜 기준 */
+    public SearchQuery parse(String question) {
+        return parse(question, LocalDate.now());
+    }
 
-    /**
-     * Parses a question relative to the given date. If no date word is found, all periods are searched.
-     * @param question the user's question
-     * @param today the date treated as today
-     * @return search conditions (never null)
-     */
+    /** 질문 분석. 날짜 단어가 없으면 전체 기간을 검색 */
     public SearchQuery parse(String question, LocalDate today) {
-        String s = " " + question.toLowerCase().replaceAll("[?!.]", " ") + " ";
-        LocalDate start = null, end = null;
+        String text = question.toLowerCase().replace("?", " ").replace("!", " ").replace(".", " ").replace(",", "");
+        String[] words = text.trim().split("\\s+");
 
-        Matcher m = RECENT.matcher(s);
-        if (m.find()) {
-            int n = Integer.parseInt(m.group(1) != null ? m.group(1) : m.group(2));
-            start = today.minusMonths(n);
-            end = today;
-            s = m.replaceFirst(" ");
-        } else {
-            LocalDate monday = today.with(DayOfWeek.MONDAY);
-            Object[][] words = {
-                    {"today|오늘", today, today},
-                    {"yesterday|어제", today.minusDays(1), today.minusDays(1)},
-                    {"this week|이번\\s*주", monday, monday.plusDays(6)},
-                    {"last week|지난\\s*주|저번\\s*주", monday.minusWeeks(1), monday.minusDays(1)},
-                    {"this month|이번\\s*달", today.withDayOfMonth(1), today.withDayOfMonth(today.lengthOfMonth())},
-                    {"last month|지난\\s*달|저번\\s*달", today.minusMonths(1).withDayOfMonth(1), today.withDayOfMonth(1).minusDays(1)},
-                    {"this year|올해", today.withDayOfYear(1), today.withDayOfYear(today.lengthOfYear())},
-                    {"last year|작년", today.minusYears(1).withDayOfYear(1), today.withDayOfYear(1).minusDays(1)},
-            };
-            for (Object[] w : words) {
-                Matcher dm = Pattern.compile((String) w[0]).matcher(s);
-                if (dm.find()) {
-                    start = (LocalDate) w[1];
-                    end = (LocalDate) w[2];
-                    s = dm.replaceFirst(" ");
-                    break;
-                }
-            }
-        }
-
-        Long min = null, max = null;
-        Matcher mn = MIN.matcher(s);
-        if (mn.find()) { min = amount(mn, 1); s = mn.replaceFirst(" "); }
-        Matcher mx = MAX.matcher(s);
-        if (mx.find()) { max = amount(mx, 1); s = mx.replaceFirst(" "); }
-
+        LocalDate start = null;
+        LocalDate end = null;
         Record.Type type = null;
+        Long min = null;
+        Long max = null;
         List<String> cats = new ArrayList<>();
         List<String> keywords = new ArrayList<>();
-        for (String raw : s.replaceAll("[^\\p{L}\\p{N}/ ]", " ").trim().split("\\s+")) {
-            if (raw.isEmpty()) continue;
-            if (EXPENSE_WORDS.contains(raw)) { type = Record.Type.EXPENSE; continue; }
-            if (INCOME_WORDS.contains(raw)) { type = Record.Type.INCOME; continue; }
-            String w = stripJosa(raw);
-            String cat = category(w);
-            if (cat != null) { if (!cats.contains(cat)) cats.add(cat); continue; }
-            if (STOP.contains(w) || STOP.contains(raw) || w.matches("\\d+") || w.matches("[a-z]")) continue;
-            keywords.add(w);
+
+        // 1. 날짜 단어 찾기
+        if (text.contains("today") || text.contains("오늘")) {
+            start = today;
+            end = today;
+        } else if (text.contains("this week") || text.contains("이번주") || text.contains("이번 주")) {
+            int dayOfWeek = today.getDayOfWeek().getValue();
+            start = today.minusDays(dayOfWeek - 1);
+            end = start.plusDays(6);
+        } else if (text.contains("last month") || text.contains("지난달") || text.contains("지난 달") || text.contains("저번달")) {
+            LocalDate lastMonth = today.minusMonths(1);
+            start = lastMonth.withDayOfMonth(1);
+            end = lastMonth.withDayOfMonth(lastMonth.lengthOfMonth());
+        } else if (text.contains("this month") || text.contains("이번달") || text.contains("이번 달")) {
+            start = today.withDayOfMonth(1);
+            end = today.withDayOfMonth(today.lengthOfMonth());
+        }
+
+        // 2. 단어 하나씩 확인
+        for (int i = 0; i < words.length; i++) {
+            String w = words[i];
+            String next = "";
+            if (i + 1 < words.length) {
+                next = words[i + 1];
+            }
+
+            // "recent 3 months", "최근 3개월"
+            if (w.equals("recent") || w.equals("최근")) {
+                String n = next.replace("개월", "");
+                if (isNumber(n)) {
+                    start = today.minusMonths(Integer.parseInt(n));
+                    end = today;
+                    i++;
+                    continue;
+                }
+            }
+
+            // "over 10000", "under 20000"
+            if ((w.equals("over") || w.equals("above")) && toAmount(next) != null) {
+                min = toAmount(next);
+                i++;
+                continue;
+            }
+            if ((w.equals("under") || w.equals("below")) && toAmount(next) != null) {
+                max = toAmount(next);
+                i++;
+                continue;
+            }
+
+            // "5만원 이상", "3000원 이하"
+            Long amount = toAmount(w);
+            if (amount != null) {
+                if (next.equals("이상")) {
+                    min = amount;
+                    i++;
+                } else if (next.equals("이하")) {
+                    max = amount;
+                    i++;
+                }
+                continue;
+            }
+
+            // 수입/지출 단어
+            if (EXPENSE_WORDS.contains(w)) {
+                type = Record.Type.EXPENSE;
+                continue;
+            }
+            if (INCOME_WORDS.contains(w)) {
+                type = Record.Type.INCOME;
+                continue;
+            }
+
+            // 카테고리 이름
+            String category = findCategory(w);
+            if (category != null) {
+                if (!cats.contains(category)) {
+                    cats.add(category);
+                }
+                continue;
+            }
+
+            // 나머지는 키워드
+            if (!STOP_WORDS.contains(w)) {
+                keywords.add(w);
+            }
         }
         return new SearchQuery(start, end, type, cats, min, max, keywords);
     }
 
-    /** Reads the number of the first group pair that matched, applying the 만 (x10,000) unit. */
-    private static Long amount(Matcher m, int first) {
-        for (int g = first; g < m.groupCount(); g += 2) {
-            if (m.group(g) != null) {
-                long v = Long.parseLong(m.group(g).replace(",", ""));
-                return m.group(g + 1) != null ? v * 10_000 : v;
+    // "10000" -> 10000, "5만원" -> 50000. 금액이 아니면 null
+    private Long toAmount(String word) {
+        String w = word.replace("won", "").replace("원", "");
+        long unit = 1;
+        if (w.endsWith("만")) {
+            unit = 10000;
+            w = w.substring(0, w.length() - 1);
+        }
+        if (!isNumber(w)) {
+            return null;
+        }
+        return Long.parseLong(w) * unit;
+    }
+
+        private boolean isNumber(String s) {
+        if (s.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            if (!Character.isDigit(s.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 카테고리 찾기
+    private String findCategory(String word) {
+        for (String c : categories) {
+            if (c.equalsIgnoreCase(word)) {
+                return c;
+            }
+        }
+        // "식비를" 처럼 조사가 붙어도 찾도록 startsWith 사용
+        for (String key : aliases.keySet()) {
+            if (word.startsWith(key) && categories.contains(aliases.get(key))) {
+                return aliases.get(key);
             }
         }
         return null;
-    }
-
-    private String category(String w) {
-        for (String c : categories) if (c.equalsIgnoreCase(w)) return c;
-        String a = ALIASES.get(w);
-        return a != null && categories.contains(a) ? a : null;
-    }
-
-    private static String stripJosa(String w) {
-        for (String j : JOSA)
-            if (w.length() > j.length() + 1 && w.endsWith(j) && !w.matches("[a-z0-9/]+")) return w.substring(0, w.length() - j.length());
-        return w;
     }
 }

@@ -1,133 +1,110 @@
-package askledger;
+package askledger.storage;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Minimal JSON reader and writer used for the data file and the LLM answer.
- * Objects become {@code Map<String,Object>}, arrays become {@code List<Object>},
- * numbers become {@code Long} or {@code Double}.
+ * 간단한 JSON 읽기/쓰기 도우미.
+ * DataStorage(데이터 파일)와 LLMClient(LLM 응답)에서 사용.
  */
-public final class Json {
-    private final String s;
-    private int i;
-
-    private Json(String s) { this.s = s; }
-
-    /**
-     * Parses a JSON text.
-     * @param text JSON text
-     * @return Map, List, String, Long, Double, Boolean or null
-     * @throws IllegalArgumentException if the text is not valid JSON
-     */
-    public static Object parse(String text) {
-        Json p = new Json(text);
-        Object v = p.value();
-        p.ws();
-        if (p.i != text.length()) throw p.err();
-        return v;
+public class Json {
+    /** 저장할 때 문자열에 따옴표 붙이기 */
+    public static String quote(String s) {
+        if (s == null) {
+            return "null";
+        }
+        String r = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t");
+        return "\"" + r + "\"";
     }
 
-    /**
-     * Converts a value (Map, List, String, Number, Boolean or null) to JSON text.
-     * @param v value to write
-     * @return JSON text
-     */
-    public static String write(Object v) {
-        StringBuilder b = new StringBuilder();
-        write(v, b);
-        return b.toString();
+    /** "key": "값" 에서 문자열 값을 꺼낸다 (없으면 null) */
+    public static String getString(String json, String key) {
+        int i = findValue(json, key);
+        if (i < 0 || json.charAt(i) != '"') {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        readString(json, i, sb);
+        return sb.toString();
     }
 
-    private static void write(Object v, StringBuilder b) {
-        if (v == null || v instanceof Number || v instanceof Boolean) { b.append(v); }
-        else if (v instanceof Map<?, ?> m) {
-            b.append('{');
-            boolean first = true;
-            for (Map.Entry<?, ?> e : m.entrySet()) {
-                if (!first) b.append(',');
-                first = false;
-                write(String.valueOf(e.getKey()), b);
-                b.append(':');
-                write(e.getValue(), b);
+    /** 숫자 값 꺼내기 */
+    public static Long getLong(String json, String key) {
+        int i = findValue(json, key);
+        if (i < 0) {
+            return null;
+        }
+        String number = "";
+        while (i < json.length() && (Character.isDigit(json.charAt(i)) || json.charAt(i) == '-')) {
+            number += json.charAt(i);
+            i++;
+        }
+        if (number.isEmpty()) {
+            return null;
+        }
+        return Long.parseLong(number);
+    }
+
+    /** ["a", "b"] 같은 목록 꺼내기 */
+    public static List<String> getList(String json, String key) {
+        List<String> list = new ArrayList<>();
+        int i = findValue(json, key);
+        if (i < 0 || json.charAt(i) != '[') {
+            return list;
+        }
+        i++;
+        while (i < json.length() && json.charAt(i) != ']') {
+            if (json.charAt(i) == '"') {
+                StringBuilder sb = new StringBuilder();
+                i = readString(json, i, sb);
+                list.add(sb.toString());
+            } else {
+                i++;
             }
-            b.append('}');
-        } else if (v instanceof List<?> l) {
-            b.append('[');
-            for (int k = 0; k < l.size(); k++) { if (k > 0) b.append(','); write(l.get(k), b); }
-            b.append(']');
-        } else {
-            b.append('"');
-            for (char c : v.toString().toCharArray()) {
-                switch (c) {
-                    case '"' -> b.append("\\\"");
-                    case '\\' -> b.append("\\\\");
-                    case '\n' -> b.append("\\n");
-                    case '\r' -> b.append("\\r");
-                    case '\t' -> b.append("\\t");
-                    default -> { if (c < 0x20) b.append(String.format("\\u%04x", (int) c)); else b.append(c); }
+        }
+        return list;
+    }
+
+    // "key": 다음에 오는 값의 시작 위치를 찾는다 (없으면 -1)
+    private static int findValue(String json, String key) {
+        String k = "\"" + key + "\":";
+        int pos = json.indexOf(k);
+        if (pos < 0) {
+            return -1;
+        }
+        int i = pos + k.length();
+        while (i < json.length() && json.charAt(i) == ' ') {
+            i++;
+        }
+        if (i >= json.length()) {
+            return -1;
+        }
+        return i;
+    }
+
+    // i 위치의 따옴표 문자열을 읽어서 sb에 넣고, 닫는 따옴표 다음 위치를 돌려준다
+    private static int readString(String json, int i, StringBuilder sb) {
+        i++;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == '"') {
+                return i + 1;
+            }
+            if (c == '\\' && i + 1 < json.length()) {
+                i++;
+                char next = json.charAt(i);
+                if (next == 'n') {
+                    sb.append('\n');
+                } else if (next == 't') {
+                    sb.append('\t');
+                } else {
+                    sb.append(next);
                 }
+            } else {
+                sb.append(c);
             }
-            b.append('"');
+            i++;
         }
+        return i;
     }
-
-    private Object value() {
-        ws();
-        if (i >= s.length()) throw err();
-        char c = s.charAt(i);
-        if (c == '{') {
-            Map<String, Object> m = new LinkedHashMap<>();
-            i++; ws();
-            if (peek('}')) return m;
-            do { ws(); String k = string(); ws(); expect(':'); m.put(k, value()); ws(); } while (peek(','));
-            expect('}');
-            return m;
-        }
-        if (c == '[') {
-            List<Object> l = new ArrayList<>();
-            i++; ws();
-            if (peek(']')) return l;
-            do { l.add(value()); ws(); } while (peek(','));
-            expect(']');
-            return l;
-        }
-        if (c == '"') return string();
-        if (s.startsWith("true", i)) { i += 4; return true; }
-        if (s.startsWith("false", i)) { i += 5; return false; }
-        if (s.startsWith("null", i)) { i += 4; return null; }
-        int st = i;
-        while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
-        String n = s.substring(st, i);
-        if (n.isEmpty()) throw err();
-        return n.matches("-?\\d+") ? (Object) Long.parseLong(n) : (Object) Double.parseDouble(n);
-    }
-
-    private String string() {
-        expect('"');
-        StringBuilder b = new StringBuilder();
-        while (true) {
-            if (i >= s.length()) throw err();
-            char c = s.charAt(i++);
-            if (c == '"') return b.toString();
-            if (c != '\\') { b.append(c); continue; }
-            char e = s.charAt(i++);
-            switch (e) {
-                case 'n' -> b.append('\n');
-                case 't' -> b.append('\t');
-                case 'r' -> b.append('\r');
-                case 'b' -> b.append('\b');
-                case 'f' -> b.append('\f');
-                case 'u' -> { b.append((char) Integer.parseInt(s.substring(i, i + 4), 16)); i += 4; }
-                default -> b.append(e);
-            }
-        }
-    }
-
-    private void ws() { while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++; }
-    private boolean peek(char c) { if (i < s.length() && s.charAt(i) == c) { i++; return true; } return false; }
-    private void expect(char c) { if (!peek(c)) throw err(); }
-    private IllegalArgumentException err() { return new IllegalArgumentException("Invalid JSON at " + i); }
 }

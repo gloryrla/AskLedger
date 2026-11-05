@@ -1,136 +1,139 @@
-package askledger;
+package askledger.ui;
+
+import askledger.model.Record;
+import askledger.service.RecordManager;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 
-/**
- * Input form for adding or editing a record.
- */
-public class RecordDialog extends JDialog {
-    private final RecordManager recordManager;
-    private final JTextField date = new JTextField(12);
-    private final JRadioButton income = new JRadioButton("Income");
-    private final JRadioButton expense = new JRadioButton("Expense", true);
-    private final JTextField amount = new JTextField(12);
-    private final JComboBox<String> category;
-    private final JTextField memo = new JTextField(20);
-    private Record editing;
-    private Record result;
+/** 기록 추가/수정 입력창 */
+public class RecordDialog extends JDialog implements ActionListener {
+    private RecordManager recordManager;
+    private JTextField dateField = new JTextField(12);
+    private JComboBox<String> typeBox = new JComboBox<>(new String[]{"Expense", "Income"});
+    private JTextField amountField = new JTextField(12);
+    private JComboBox<String> categoryBox = new JComboBox<>();
+    private JTextField memoField = new JTextField(20);
+    private JButton saveButton = new JButton("Save");
+    private JButton cancelButton = new JButton("Cancel");
 
-    /**
-     * @param owner parent window
-     * @param recordManager used to add or update the record
-     * @param categories category names for the combo box
-     */
+    private Record editing = null;   // 수정 중인 기록 (추가할 때는 null)
+    private Record result = null;   // 저장된 기록 (취소하면 null)
+
     public RecordDialog(Frame owner, RecordManager recordManager, List<String> categories) {
         super(owner, true);
         this.recordManager = recordManager;
-        this.category = new JComboBox<>(categories.toArray(new String[0]));
-        ButtonGroup g = new ButtonGroup();
-        g.add(income);
-        g.add(expense);
-        JPanel typePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        typePanel.add(income);
-        typePanel.add(expense);
-
-        JPanel form = new JPanel(new GridBagLayout());
-        form.setBorder(BorderFactory.createEmptyBorder(12, 12, 0, 12));
-        GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(4, 4, 4, 4);
-        c.anchor = GridBagConstraints.WEST;
-        Object[][] rows = {{"Date (yyyy-MM-dd)", date}, {"Type", typePanel}, {"Amount (won)", amount},
-                {"Category", category}, {"Memo", memo}};
-        for (int r = 0; r < rows.length; r++) {
-            c.gridy = r;
-            c.gridx = 0;
-            form.add(new JLabel((String) rows[r][0]), c);
-            c.gridx = 1;
-            form.add((Component) rows[r][1], c);
+        for (String c : categories) {
+            categoryBox.addItem(c);
         }
-        JButton save = new JButton("Save");
-        JButton cancel = new JButton("Cancel");
-        save.addActionListener(e -> clickSave());
-        cancel.addActionListener(e -> dispose());
+
+        JPanel form = new JPanel(new GridLayout(5, 2, 5, 5));
+        form.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        form.add(new JLabel("Date (yyyy-MM-dd)"));
+        form.add(dateField);
+        form.add(new JLabel("Type"));
+        form.add(typeBox);
+        form.add(new JLabel("Amount (won)"));
+        form.add(amountField);
+        form.add(new JLabel("Category"));
+        form.add(categoryBox);
+        form.add(new JLabel("Memo"));
+        form.add(memoField);
+
+        saveButton.addActionListener(this);
+        cancelButton.addActionListener(this);
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        buttons.add(cancel);
-        buttons.add(save);
-        getRootPane().setDefaultButton(save);
+        buttons.add(cancelButton);
+        buttons.add(saveButton);
+
         add(form, BorderLayout.CENTER);
         add(buttons, BorderLayout.SOUTH);
         pack();
         setLocationRelativeTo(owner);
     }
 
-    /**
-     * Opens an empty form.
-     * @return the new record, or null if cancelled
-     */
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        if (e.getSource() == saveButton) {
+            clickSave();
+        } else if (e.getSource() == cancelButton) {
+            dispose();
+        }
+    }
+
+    /** 빈 입력창을 연다. 새 기록을 돌려주고 취소하면 null */
     public Record showDialog() {
         setTitle("Add Record");
-        date.setText(LocalDate.now().toString());
+        dateField.setText(LocalDate.now().toString());
         setVisible(true);
         return result;
     }
 
-    /**
-     * Opens the form filled with the values of the given record.
-     * @param record record to edit
-     * @return the changed record, or null if cancelled
-     */
+    /** 기록 값이 채워진 입력창을 연다. 수정된 기록을 돌려주고 취소하면 null */
     public Record showDialog(Record record) {
         setTitle("Edit Record");
-        fill(record);
+        editing = record;
+        dateField.setText(record.getDate().toString());
+        if (record.getType() == Record.Type.INCOME) {
+            typeBox.setSelectedItem("Income");
+        } else {
+            typeBox.setSelectedItem("Expense");
+        }
+        amountField.setText(String.valueOf(record.getAmount()));
+        categoryBox.setSelectedItem(record.getCategory());
+        memoField.setText(record.getMemo());
         setVisible(true);
         return result;
     }
 
-    /**
-     * Fills the form with a record's values without showing it.
-     * @param record record to show
-     */
-    void fill(Record record) {
-        editing = record;
-        date.setText(record.getDate().toString());
-        (record.getType() == Record.Type.INCOME ? income : expense).setSelected(true);
-        amount.setText(String.valueOf(record.getAmount()));
-        category.setSelectedItem(record.getCategory());
-        memo.setText(record.getMemo());
-    }
-
-    /**
-     * Called when Save is clicked. Validates the input and adds or updates the record.
-     */
+    /** 저장 버튼: 입력값을 확인하고 기록을 추가하거나 수정한다 */
     public void clickSave() {
-        if (!validateInput()) return;
-        Record r = new Record(0, LocalDate.parse(date.getText().trim()),
-                income.isSelected() ? Record.Type.INCOME : Record.Type.EXPENSE,
-                Long.parseLong(amount.getText().trim().replace(",", "")),
-                (String) category.getSelectedItem(), memo.getText().trim());
-        boolean ok = editing == null ? recordManager.addRecord(r) : recordManager.updateRecord(editing.getId(), r);
-        if (!ok) JOptionPane.showMessageDialog(this, "The data file could not be saved.", "Error", JOptionPane.ERROR_MESSAGE);
-        result = r;
+        if (!validateInput()) {
+            return;
+        }
+        LocalDate date = LocalDate.parse(dateField.getText().trim());
+        Record.Type type = Record.Type.EXPENSE;
+        if (typeBox.getSelectedItem().equals("Income")) {
+            type = Record.Type.INCOME;
+        }
+        long amount = Long.parseLong(amountField.getText().trim().replace(",", ""));
+        String category = (String) categoryBox.getSelectedItem();
+        Record record = new Record(0, date, type, amount, category, memoField.getText().trim());
+
+        boolean saved;
+        if (editing == null) {
+            saved = recordManager.addRecord(record);
+        } else {
+            saved = recordManager.updateRecord(editing.getId(), record);
+        }
+        if (!saved) {
+            JOptionPane.showMessageDialog(this, "The data file could not be saved.");
+        }
+        result = record;
         dispose();
     }
 
-    /**
-     * Checks that the date is valid and the amount is a positive number. Shows an error if not.
-     * @return true if the input is valid
-     */
+    /** 날짜 형식과 금액(양수)을 확인. 틀리면 오류창 */
     public boolean validateInput() {
         try {
-            LocalDate.parse(date.getText().trim());
+            LocalDate.parse(dateField.getText().trim());
         } catch (DateTimeParseException e) {
-            JOptionPane.showMessageDialog(this, "Enter the date as yyyy-MM-dd.", "Invalid date", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Enter the date as yyyy-MM-dd.");
             return false;
         }
         try {
-            if (Long.parseLong(amount.getText().trim().replace(",", "")) > 0) return true;
-        } catch (NumberFormatException ignored) {
+            long amount = Long.parseLong(amountField.getText().trim().replace(",", ""));
+            if (amount > 0) {
+                return true;
+            }
+        } catch (NumberFormatException e) {
         }
-        JOptionPane.showMessageDialog(this, "The amount must be a positive number.", "Invalid amount", JOptionPane.ERROR_MESSAGE);
+        JOptionPane.showMessageDialog(this, "The amount must be a positive number.");
         return false;
     }
 }

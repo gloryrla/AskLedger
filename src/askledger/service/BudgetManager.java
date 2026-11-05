@@ -1,74 +1,67 @@
-package askledger;
+package askledger.service;
+
+import askledger.model.BudgetUsage;
+import askledger.model.Record;
+import askledger.storage.DataStorage;
 
 import java.time.YearMonth;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Keeps the monthly budget of each category.
- */
+/** 카테고리별 월 예산을 관리하는 클래스 */
 public class BudgetManager {
-    private final DataStorage storage;
-    private final RecordManager recordManager;
-    private Map<String, Long> budgets = new LinkedHashMap<>();
+    private DataStorage storage;
+    private RecordManager recordManager;
+    private Map<String, Long> budgets = new HashMap<>();   // 카테고리 이름 -> 예산 금액
 
-    /**
-     * @param storage used to save after a change
-     * @param recordManager used to add up expenses
-     */
     public BudgetManager(DataStorage storage, RecordManager recordManager) {
         this.storage = storage;
         this.recordManager = recordManager;
     }
 
-    /**
-     * Replaces the budget map with the loaded budgets.
-     * @param budgets loaded budgets (this map is kept, not copied)
-     */
-    public void setBudgets(Map<String, Long> budgets) { this.budgets = budgets; }
+    public void setBudgets(Map<String, Long> budgets) {
+        this.budgets = budgets;
+    }
 
-    /**
-     * Saves the budget of the category.
-     * @param category category name
-     * @param amount monthly budget
-     * @return false if the amount is not positive or saving fails
-     */
+    /** 예산을 저장한다. 금액이 0 이하면 저장 안 함 */
     public boolean setBudget(String category, long amount) {
-        if (amount <= 0) return false;
+        if (amount <= 0) {
+            return false;
+        }
         budgets.put(category, amount);
         return storage.saveAll();
     }
 
-    /**
-     * Checks whether the expenses of the category in the month are over its budget.
-     * @param category category name
-     * @param month the month
-     * @return true if over budget; false if no budget is set
-     */
+    /** 해당 달 지출이 예산을 넘었는지 확인 */
     public boolean checkBudget(String category, YearMonth month) {
         Long budget = budgets.get(category);
-        return budget != null && spent(category, month) > budget;
+        if (budget == null) {
+            return false;
+        }
+        return getSpent(category, month) > budget;
     }
 
-    /**
-     * Returns the budget, the spent amount and the usage of each category that has a budget.
-     * @param month the month
-     * @return usage list in budget order
-     */
+    /** 예산이 있는 카테고리마다 예산, 쓴 돈, 사용률(%)을 구한다 */
     public List<BudgetUsage> getUsage(YearMonth month) {
         List<BudgetUsage> list = new ArrayList<>();
-        budgets.forEach((c, b) -> {
-            long s = spent(c, month);
-            list.add(new BudgetUsage(c, b, s, s * 100.0 / b));
-        });
+        for (String category : budgets.keySet()) {
+            long budget = budgets.get(category);
+            long spent = getSpent(category, month);
+            list.add(new BudgetUsage(category, budget, spent, spent * 100.0 / budget));
+        }
         return list;
     }
 
-    private long spent(String category, YearMonth month) {
-        return recordManager.getRecordsByMonth(month).stream()
-                .filter(r -> r.getType() == Record.Type.EXPENSE && r.getCategory().equals(category))
-                .mapToLong(Record::getAmount).sum();
+    // 해당 달에 그 카테고리에서 쓴 돈 합계
+    private long getSpent(String category, YearMonth month) {
+        long sum = 0;
+        for (Record r : recordManager.getRecordsByMonth(month)) {
+            if (r.getType() == Record.Type.EXPENSE && r.getCategory().equals(category)) {
+                sum += r.getAmount();
+            }
+        }
+        return sum;
     }
 }

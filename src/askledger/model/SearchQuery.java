@@ -1,18 +1,54 @@
-package askledger;
+package askledger.model;
 
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * Search conditions. A {@code null} (or empty list) condition is ignored.
- * @param startDate first day (inclusive)
- * @param endDate last day (inclusive)
- * @param type income or expense
- * @param categories allowed categories
- * @param minAmount minimum amount
- * @param maxAmount maximum amount
- * @param keywords words looked up in the memo and category (any one must match)
- */
-public record SearchQuery(LocalDate startDate, LocalDate endDate, Record.Type type, List<String> categories,
-                          Long minAmount, Long maxAmount, List<String> keywords) {
+/** 검색 조건. null(또는 빈 리스트)인 조건은 무시한다 */
+public class SearchQuery {
+    private LocalDate startDate;
+    private LocalDate endDate;
+    private Record.Type type;
+    private List<String> categories;
+    private Long minAmount;
+    private Long maxAmount;
+    private List<String> keywords;
+
+    public SearchQuery(LocalDate startDate, LocalDate endDate, Record.Type type, List<String> categories,
+                       Long minAmount, Long maxAmount, List<String> keywords) {
+        this.startDate = startDate;
+        this.endDate = endDate;
+        this.type = type;
+        this.categories = categories;
+        this.minAmount = minAmount;
+        this.maxAmount = maxAmount;
+        this.keywords = keywords;
+    }
+
+    public LocalDate getStartDate() {
+        return startDate;
+    }
+
+    public LocalDate getEndDate() {
+        return endDate;
+    }
+
+    public Record.Type getType() {
+        return type;
+    }
+
+    public List<String> getCategories() {
+        return categories;
+    }
+
+    public Long getMinAmount() {
+        return minAmount;
+    }
+
+    public Long getMaxAmount() {
+        return maxAmount;
+    }
+
+    public List<String> getKeywords() {
+        return keywords;
+    }
 }
