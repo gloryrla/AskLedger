@@ -1,0 +1,6 @@
+build/
+out/
+*.class
+askledger_data.json*
+.DS_Store
+.idea/
